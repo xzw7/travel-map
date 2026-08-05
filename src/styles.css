@@ -1074,6 +1074,55 @@ img {
   font-weight: 400;
 }
 
+/* ---- 导入/导出备份 ---- */
+
+.backup-section {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.backup-btn {
+  flex: 1;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1.5px solid rgba(195, 150, 110, 0.22);
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.export-btn {
+  background: linear-gradient(180deg, rgba(254, 249, 239, 0.95) 0%, rgba(250, 243, 232, 0.95) 100%);
+  color: #b87640;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #fff6eb 0%, #fdf0de 100%);
+  border-color: rgba(212, 140, 85, 0.4);
+  box-shadow: 0 6px 16px rgba(212, 140, 85, 0.12);
+  transform: translateY(-1px);
+}
+
+.export-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.import-btn {
+  background: linear-gradient(180deg, rgba(245, 249, 242, 0.9) 0%, rgba(235, 245, 233, 0.9) 100%);
+  color: #56784c;
+}
+
+.import-btn:hover {
+  background: linear-gradient(180deg, #eef6ea 0%, #ddefd6 100%);
+  border-color: rgba(138, 177, 125, 0.45);
+  box-shadow: 0 6px 16px rgba(138, 177, 125, 0.12);
+  transform: translateY(-1px);
+}
+
 /* ---- 回忆相册 ---- */
 
 .memory-album-overlay {

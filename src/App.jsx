@@ -372,6 +372,8 @@ function App() {
     return map;
   }, []);
   const [uploadedPhotosByCity, setUploadedPhotosByCity] = useState(readStoredUploads);
+  const [backupStatus, setBackupStatus] = useState("idle"); // idle | exporting | done | error
+  const importFileRef = React.useRef(null);
   const [lastUploadKey, setLastUploadKey] = useState(null);
   // Refs for IndexedDB integration (keeps latest state for async handlers)
   const uploadedRef = React.useRef(uploadedPhotosByCity);
@@ -715,6 +717,125 @@ function App() {
     setEditTagInput("");
   }
 
+  async function handleExport() {
+    setBackupStatus("exporting");
+    try {
+      const uploads = await readUploadsFromIdb();
+      const exportData = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        uploadedPhotosByCity: uploads,
+        deletedTripIds: readDeletedTrips(),
+        tripEdits: readTripEdits(),
+      };
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `travel-map-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setBackupStatus("done");
+      setTimeout(() => setBackupStatus("idle"), 2500);
+    } catch (err) {
+      console.error("Export failed:", err);
+      setBackupStatus("error");
+      setTimeout(() => setBackupStatus("idle"), 2500);
+    }
+  }
+
+  function handleImportClick() {
+    importFileRef.current?.click();
+  }
+
+  async function handleImportFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      if (!data.uploadedPhotosByCity || typeof data.uploadedPhotosByCity !== "object") {
+        throw new Error("文件格式不正确，缺少照片数据。");
+      }
+
+      const cityCount = Object.keys(data.uploadedPhotosByCity).length;
+      let photoCount = 0;
+      for (const v of Object.values(data.uploadedPhotosByCity)) {
+        photoCount += Array.isArray(v) ? v.length : (v.photos?.length || 0);
+      }
+
+      const shouldMerge = window.confirm(
+        `即将导入 ${cityCount} 个城市共 ${photoCount} 张照片。\n\n选择"确定"合并到现有数据，"取消"则放弃导入。`
+      );
+      if (!shouldMerge) {
+        event.target.value = "";
+        return;
+      }
+
+      // Merge with existing IndexedDB data
+      const existing = await readUploadsFromIdb();
+      const merged = { ...existing };
+
+      for (const [key, value] of Object.entries(data.uploadedPhotosByCity)) {
+        if (!merged[key]) {
+          merged[key] = value;
+        } else {
+          // Merge photos, skip duplicates by id
+          const existingPhotos = Array.isArray(merged[key])
+            ? merged[key]
+            : merged[key].photos || [];
+          const newPhotos = Array.isArray(value) ? value : value.photos || [];
+          const existingIds = new Set(existingPhotos.map((p) => p.id));
+          const uniqueNewPhotos = newPhotos.filter((p) => !existingIds.has(p.id));
+          merged[key] = {
+            province: merged[key].province || value.province,
+            district: merged[key].district || value.district,
+            photos: [...existingPhotos, ...uniqueNewPhotos],
+          };
+        }
+      }
+
+      // Save to IndexedDB
+      const result = await saveUploadsToIdb(merged);
+      if (result !== "ok") {
+        window.alert("导入失败：存储空间不足，请删除一些旧照片后再试。");
+        event.target.value = "";
+        return;
+      }
+
+      // Restore deletedTripIds
+      if (Array.isArray(data.deletedTripIds) && data.deletedTripIds.length > 0) {
+        const existingDeleted = readDeletedTrips();
+        const mergedDeleted = [...new Set([...existingDeleted, ...data.deletedTripIds])];
+        storeDeletedTrips(mergedDeleted);
+        setDeletedTripIds(mergedDeleted);
+      }
+
+      // Restore tripEdits
+      if (data.tripEdits && typeof data.tripEdits === "object") {
+        const existingEdits = readTripEdits();
+        const mergedEdits = { ...existingEdits, ...data.tripEdits };
+        storeTripEdits(mergedEdits);
+        setTripEdits(mergedEdits);
+      }
+
+      // Update state
+      setUploadedPhotosByCity(merged);
+      setBackupStatus("done");
+      window.alert(`导入成功！${cityCount} 个城市、${photoCount} 张照片已合并。`);
+      setTimeout(() => setBackupStatus("idle"), 2500);
+    } catch (err) {
+      console.error("Import failed:", err);
+      window.alert(`导入失败：${err.message}`);
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   function handleDeleteTrip(tripId) {
     const trip = allTrips.find((t) => t.id === tripId);
     if (!trip) return;
@@ -831,6 +952,32 @@ function App() {
           回忆相册
           <span className="album-entry-hint">看全部照片</span>
         </button>
+
+        <div className="backup-section">
+          <button
+            className="backup-btn export-btn"
+            type="button"
+            onClick={handleExport}
+            disabled={backupStatus === "exporting"}
+          >
+            {backupStatus === "exporting" ? "导出中…" : backupStatus === "done" ? "导出完成" : backupStatus === "error" ? "导出失败" : "导出备份"}
+          </button>
+          <button
+            className="backup-btn import-btn"
+            type="button"
+            onClick={handleImportClick}
+          >
+            导入备份
+          </button>
+        </div>
+
+        <input
+          ref={importFileRef}
+          type="file"
+          accept=".json"
+          style={{ display: "none" }}
+          onChange={handleImportFile}
+        />
       </aside>
 
       <main className="main-panel">
