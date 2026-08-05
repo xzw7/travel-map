@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import * as echarts from "echarts";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import exifr from "exifr";
 import BounceCards from "./components/BounceCards";
 import GrainientBackground from "./components/GrainientBackground";
 import TextPressure from "./components/TextPressure";
+import MapView from "./components/MapView";
+import RandomFrame from "./components/RandomFrame";
+import MemoryAlbum from "./components/MemoryAlbum";
 import cityOptions from "./data/cityOptions.json";
 import travels from "./data/travels.json";
 
-const CHINA_GEOJSON_URL = `${import.meta.env.BASE_URL}china-cities.geojson`;
 const UPLOAD_STORAGE_KEY = "travel-map-local-uploads";
 const UPLOAD_AUTH_KEY = "travel-map-upload-unlocked";
-const UPLOAD_PASSWORD_HASH = "da493e7673dedcb3692cb54e8974c851e4f82787046c7e9af76b0b78165725ca";
+const DELETED_TRIPS_KEY = "travel-map-deleted-trips";
+const TRIP_EDITS_KEY = "travel-map-trip-edits";
+const UPLOAD_PASSWORD_HASH = "88343e81a6987590af0c445b235dbb8561a8d46befd16d37bb4b87a503f52932";
 const PROVINCE_OPTIONS = cityOptions;
 
 const sortedTravels = [...travels].sort((left, right) =>
@@ -56,98 +59,16 @@ function resolveAssetPath(assetPath) {
 function collectStats(items) {
   const citySet = new Set(items.map((item) => item.city));
   const provinceSet = new Set(items.map((item) => item.province));
+  const districtCount = items.filter((item) => item.district).length;
   const totalPhotos = items.reduce((sum, item) => sum + item.photos.length, 0);
 
   return {
     cities: citySet.size,
     provinces: provinceSet.size,
+    districts: districtCount,
     totalTrips: items.length,
     totalPhotos,
   };
-}
-
-function hexToRgb(hex) {
-  const normalized = hex.replace("#", "");
-  return [
-    parseInt(normalized.slice(0, 2), 16),
-    parseInt(normalized.slice(2, 4), 16),
-    parseInt(normalized.slice(4, 6), 16),
-  ];
-}
-
-function rgbToHex([red, green, blue]) {
-  return `#${[red, green, blue]
-    .map((value) => Math.round(value).toString(16).padStart(2, "0"))
-    .join("")}`;
-}
-
-function mixColor(color, ratio) {
-  const from = hexToRgb(color);
-  const to = [255, 244, 219];
-  return rgbToHex(from.map((value, index) => value * (1 - ratio) + to[index] * ratio));
-}
-
-function getProvinceColor(province, index = 0) {
-  const baseColor = PROVINCE_OPTIONS[province]?.color || "#ee8f76";
-  return mixColor(baseColor, Math.min(index * 0.18, 0.42));
-}
-
-function buildCityRegions(geoJson, items) {
-  const visitedCityIndex = new Map();
-  const tripsByCity = new Map(items.map((item) => [item.city, item]));
-
-  return (geoJson.features || []).map((feature) => ({
-    name: feature.properties?.name,
-    itemStyle: (() => {
-      const cityName = feature.properties?.name;
-      const provinceName = feature.properties?.province;
-      const trip = tripsByCity.get(cityName);
-      if (!trip) {
-        return {
-          areaColor: "#dbd8d1",
-          borderColor: "#c4bfb6",
-          borderWidth: 0.55,
-        };
-      }
-
-      const index = visitedCityIndex.get(provinceName) || 0;
-      visitedCityIndex.set(provinceName, index + 1);
-      const color = getProvinceColor(provinceName, index);
-      return {
-        areaColor: color,
-        borderColor: "#fff8ec",
-        borderWidth: 1,
-        shadowBlur: 16,
-        shadowColor: `${color}88`,
-      };
-    })(),
-    emphasis: {
-      itemStyle: {
-        areaColor: tripsByCity.has(feature.properties?.name) ? "#fff0c9" : "#cec9c0",
-      },
-    },
-  }));
-}
-
-function buildCitySeries(items) {
-  const provinceCityIndex = new Map();
-
-  return items.map((item) => {
-    const index = provinceCityIndex.get(item.province) || 0;
-    provinceCityIndex.set(item.province, index + 1);
-    const color = getProvinceColor(item.province, index);
-
-    return {
-      name: item.city,
-      value: [...item.coords, item.photos.length || 1],
-      tripId: item.id,
-      itemStyle: {
-        color,
-        shadowBlur: 16,
-        shadowColor: `${color}99`,
-      },
-    };
-  });
 }
 
 function readStoredUploads() {
@@ -158,13 +79,88 @@ function readStoredUploads() {
   }
 }
 
-function storeUploads(nextUploads) {
+/* ---- IndexedDB helpers (replaces localStorage for photos) ---- */
+
+const DB_NAME = "travel-map-db";
+const DB_VERSION = 1;
+const IDB_PHOTOS_KEY = "photos";
+
+function openIdb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(IDB_PHOTOS_KEY)) {
+        db.createObjectStore(IDB_PHOTOS_KEY);
+      }
+    };
+    request.onsuccess = (event) => resolve(event.target.result);
+    request.onerror = (event) => reject(event.target.error);
+  });
+}
+
+async function readUploadsFromIdb() {
   try {
-    window.localStorage.setItem(UPLOAD_STORAGE_KEY, JSON.stringify(nextUploads));
+    const db = await openIdb();
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_PHOTOS_KEY, "readonly");
+      const store = tx.objectStore(IDB_PHOTOS_KEY);
+      const req = store.get(IDB_PHOTOS_KEY);
+      req.onsuccess = () => resolve(req.result || {});
+      req.onerror = () => resolve({});
+      tx.oncomplete = () => db.close();
+    });
   } catch {
-    return undefined;
+    return {};
   }
-  return undefined;
+}
+
+async function saveUploadsToIdb(data) {
+  try {
+    const db = await openIdb();
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_PHOTOS_KEY, "readwrite");
+      const store = tx.objectStore(IDB_PHOTOS_KEY);
+      const req = store.put(data, IDB_PHOTOS_KEY);
+      req.onsuccess = () => resolve("ok");
+      req.onerror = () => {
+        resolve(req.error?.name === "QuotaExceededError" ? "quota" : "error");
+      };
+      tx.oncomplete = () => db.close();
+    });
+  } catch {
+    return "error";
+  }
+}
+
+async function initUploadStorage() {
+  // Migrate old localStorage data into IndexedDB
+  try {
+    const localRaw = window.localStorage.getItem(UPLOAD_STORAGE_KEY);
+    if (localRaw) {
+      const parsed = JSON.parse(localRaw);
+      if (Object.keys(parsed).length > 0) {
+        const result = await saveUploadsToIdb(parsed);
+        if (result === "ok") {
+          // Only delete localStorage AFTER confirming IndexedDB write succeeded
+          window.localStorage.removeItem(UPLOAD_STORAGE_KEY);
+          return parsed;
+        }
+        // Migration failed — keep localStorage as fallback
+        console.warn("IndexedDB migration failed, keeping localStorage backup");
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn("Migration error:", err);
+  }
+
+  // Fallback: read from IndexedDB, then localStorage
+  const idbData = await readUploadsFromIdb();
+  if (Object.keys(idbData).length > 0) return idbData;
+
+  // Last resort: read from localStorage
+  return readStoredUploads();
 }
 
 function readUploadAuth() {
@@ -178,6 +174,40 @@ function readUploadAuth() {
 function storeUploadAuth() {
   try {
     window.sessionStorage.setItem(UPLOAD_AUTH_KEY, "true");
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function readDeletedTrips() {
+  try {
+    return JSON.parse(window.localStorage.getItem(DELETED_TRIPS_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function storeDeletedTrips(ids) {
+  try {
+    window.localStorage.setItem(DELETED_TRIPS_KEY, JSON.stringify(ids));
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function readTripEdits() {
+  try {
+    return JSON.parse(window.localStorage.getItem(TRIP_EDITS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function storeTripEdits(edits) {
+  try {
+    window.localStorage.setItem(TRIP_EDITS_KEY, JSON.stringify(edits));
   } catch {
     return undefined;
   }
@@ -200,17 +230,19 @@ async function readPhotoTakenAt(file) {
   return "本地上传";
 }
 
-function fileToPhoto(file) {
+function fileToPhoto(file, captionOverride, takenAtOverride) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = async () =>
+    reader.onload = async () => {
+      const exifTakenAt = await readPhotoTakenAt(file);
       resolve({
         id: `${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`,
         src: reader.result,
-        caption: file.name.replace(/\.[^.]+$/, ""),
-        takenAt: await readPhotoTakenAt(file),
+        caption: captionOverride || file.name.replace(/\.[^.]+$/, ""),
+        takenAt: takenAtOverride || exifTakenAt,
         isLocalUpload: true,
       });
+    };
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -218,7 +250,8 @@ function fileToPhoto(file) {
 
 function getTripPhotos(trip, uploadedPhotosByCity) {
   if (!trip) return [];
-  const payload = uploadedPhotosByCity[trip.city];
+  const key = tripKeyFromTrip(trip);
+  const payload = uploadedPhotosByCity[key];
   const uploadedPhotos = normalizeUploadedPhotos(Array.isArray(payload) ? payload : payload?.photos || []);
   return [...trip.photos, ...uploadedPhotos];
 }
@@ -244,14 +277,30 @@ function getCityOption(province, city) {
   return PROVINCE_OPTIONS[province]?.cities.find((item) => item.name === city);
 }
 
-function createUploadTrip({ province, city, photos }) {
-  const cityOption = getCityOption(province, city);
+function getDistrictOption(province, city, district) {
+  if (!district) return getCityOption(province, city);
+  const cityData = PROVINCE_OPTIONS[province]?.cities?.find((c) => c.name === city);
+  const districtData = cityData?.districts?.find(
+    (d) =>
+      d.name === district ||
+      d.name === district + "区" ||
+      d.name === district + "县" ||
+      d.name === district + "市",
+  );
+  return districtData || getCityOption(province, city);
+}
+
+function createUploadTrip({ province, city, district, photos }) {
+  const cityOption = district
+    ? getDistrictOption(province, city, district)
+    : getCityOption(province, city);
   const firstDate = photos[0]?.takenAt?.slice(0, 10) || "";
 
   return {
-    id: `local-${province}-${city}`,
+    id: `local-${province}-${city}${district ? `-${district}` : ""}`,
     city,
     province,
+    district: district || undefined,
     startDate: firstDate,
     endDate: firstDate,
     coords: cityOption?.coords || [0, 0],
@@ -262,56 +311,113 @@ function createUploadTrip({ province, city, photos }) {
 }
 
 function mergeUploadedTrips(baseTrips, uploadedPhotosByCity) {
-  const tripsByCity = new Map(baseTrips.map((trip) => [trip.city, { ...trip }]));
+  const tripsByKey = new Map(
+    baseTrips.map((trip) => [tripKeyFromTrip(trip), { ...trip }])
+  );
 
-  for (const [city, payload] of Object.entries(uploadedPhotosByCity)) {
+  for (const [uploadKey, payload] of Object.entries(uploadedPhotosByCity)) {
     const photos = normalizeUploadedPhotos(Array.isArray(payload) ? payload : payload.photos || []);
     const province = Array.isArray(payload) ? null : payload.province;
+    const district = Array.isArray(payload) ? null : payload.district;
     if (photos.length === 0) continue;
 
-    const existingTrip = tripsByCity.get(city);
+    // Extract city from composite key for new trips
+    const cityFromKey = province ? uploadKey.split("||")[0] : uploadKey;
+
+    const existingTrip = tripsByKey.get(uploadKey);
     if (existingTrip) {
-      tripsByCity.set(city, {
+      tripsByKey.set(uploadKey, {
         ...existingTrip,
+        ...(district ? { district } : {}),
         photos: [...existingTrip.photos, ...photos],
       });
       continue;
     }
 
     if (!province) continue;
-    tripsByCity.set(city, createUploadTrip({ province, city, photos }));
+    const city = cityFromKey;
+    tripsByKey.set(uploadKey, createUploadTrip({ province, city, district, photos }));
   }
 
-  return [...tripsByCity.values()].sort((left, right) =>
+  return [...tripsByKey.values()].sort((left, right) =>
     `${right.startDate || ""}${right.endDate || ""}`.localeCompare(
       `${left.startDate || ""}${left.endDate || ""}`,
     ),
   );
 }
 
-function buildMapSubtitle() {
-  return "全国城市级地图，去过的城市会按省份同色系渐变点亮";
+function buildMapSubtitle(stats) {
+  return `共点亮 ${stats.cities} 个城市${stats.districts > 0 ? ` · ${stats.districts} 个精确区县` : ""} · 放大到广东省可切换街道级地图`;
 }
 
 function buildPhotoAlt(photo, city) {
   return `${city} - ${photo.caption}`;
 }
 
-function normalizeCityName(cityName) {
-  return cityName.replace(/市$/, "");
+function tripKey(city, district) {
+  return district ? `${city}||${district}` : city;
+}
+
+function tripKeyFromTrip(trip) {
+  return tripKey(trip.city, trip.district);
 }
 
 function App() {
-  const chartRef = useRef(null);
-  const mapViewportRef = useRef(null);
-  const provinceNames = Object.keys(PROVINCE_OPTIONS);
+  const provinceNames = useMemo(() => Object.keys(PROVINCE_OPTIONS), []);
+  const provinceColors = useMemo(() => {
+    const map = {};
+    for (const [province, data] of Object.entries(PROVINCE_OPTIONS)) {
+      map[province] = data.color || "#ee8f76";
+    }
+    return map;
+  }, []);
   const [uploadedPhotosByCity, setUploadedPhotosByCity] = useState(readStoredUploads);
+  const [lastUploadKey, setLastUploadKey] = useState(null);
+  // Refs for IndexedDB integration (keeps latest state for async handlers)
+  const uploadedRef = React.useRef(uploadedPhotosByCity);
+  React.useEffect(() => { uploadedRef.current = uploadedPhotosByCity; }, [uploadedPhotosByCity]);
+
+  // Load from IndexedDB + migrate old localStorage on mount
+  React.useEffect(() => {
+    let cancelled = false;
+    initUploadStorage().then((data) => {
+      if (!cancelled && data && Object.keys(data).length > 0) {
+        setUploadedPhotosByCity((prev) => {
+          // Prefer IDB data if it has more entries, merge otherwise
+          if (Object.keys(data).length >= Object.keys(prev).length) return data;
+          return prev;
+        });
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const [deletedTripIds, setDeletedTripIds] = useState(readDeletedTrips);
+  const [tripEdits, setTripEdits] = useState(readTripEdits);
   const allTrips = useMemo(
-    () => mergeUploadedTrips(sortedTravels, uploadedPhotosByCity),
-    [uploadedPhotosByCity],
+    () =>
+      mergeUploadedTrips(sortedTravels, uploadedPhotosByCity)
+        .filter((t) => !deletedTripIds.includes(t.id))
+        .map((trip) => {
+          const edit = tripEdits[trip.id];
+          if (!edit) return trip;
+          return { ...trip, note: edit.note ?? trip.note, tags: edit.tags ?? trip.tags };
+        }),
+    [uploadedPhotosByCity, deletedTripIds, tripEdits],
   );
+
+  // Auto-select trip after upload (matches by city/district key)
+  React.useEffect(() => {
+    if (!lastUploadKey) return;
+    const matchingTrip = allTrips.find(
+      (trip) => tripKeyFromTrip(trip) === lastUploadKey,
+    );
+    if (matchingTrip) {
+      setSelectedTripId(matchingTrip.id);
+    }
+    setLastUploadKey(null);
+  }, [lastUploadKey, allTrips]);
   const [selectedTripId, setSelectedTripId] = useState(allTrips[0]?.id ?? null);
-  const [mapStatus, setMapStatus] = useState("loading");
   const [shareState, setShareState] = useState("idle");
   const [isUploadUnlocked, setIsUploadUnlocked] = useState(readUploadAuth);
   const [uploadPassphrase, setUploadPassphrase] = useState("");
@@ -320,7 +426,21 @@ function App() {
   const [selectedUploadCity, setSelectedUploadCity] = useState(
     PROVINCE_OPTIONS[provinceNames[0]]?.cities[0]?.name ?? "",
   );
+  const [selectedUploadDistrict, setSelectedUploadDistrict] = useState("");
+  const [customPhotoDate, setCustomPhotoDate] = useState("");
+  const [customPhotoCaption, setCustomPhotoCaption] = useState("");
+  const [isDragOver, setIsDragOver] = useState(false);
   const [lightboxPhoto, setLightboxPhoto] = useState(null);
+  const [showAlbum, setShowAlbum] = useState(false);
+  const handleOpenAlbum = useCallback(() => setShowAlbum(true), []);
+  const handleCloseAlbum = useCallback(() => setShowAlbum(false), []);
+  // Note editing
+  const [editingNote, setEditingNote] = useState(false);
+  const [editNoteDraft, setEditNoteDraft] = useState("");
+  // Tag editing
+  const [editingTags, setEditingTags] = useState(false);
+  const [editTagsDraft, setEditTagsDraft] = useState([]);
+  const [editTagInput, setEditTagInput] = useState("");
   const selectedTrip = allTrips.find((item) => item.id === selectedTripId) ?? allTrips[0] ?? null;
   const selectedTripPhotos = selectedTrip?.photos || [];
   const selectedTripPhotoCards = useMemo(
@@ -334,7 +454,12 @@ function App() {
     [selectedTrip?.city, selectedTripPhotos],
   );
   const selectedProvinceCities = PROVINCE_OPTIONS[selectedUploadProvince]?.cities || [];
-  const stats = collectStats(allTrips);
+  const selectedCityDistricts =
+    PROVINCE_OPTIONS[selectedUploadProvince]?.cities?.find(
+      (c) => c.name === selectedUploadCity,
+    )?.districts || [];
+  const stats = useMemo(() => collectStats(allTrips), [allTrips]);
+  const mapSubtitle = useMemo(() => buildMapSubtitle(stats), [stats]);
 
   useEffect(() => {
     if (!allTrips[0]) return;
@@ -346,9 +471,14 @@ function App() {
   useEffect(() => {
     const firstCity = PROVINCE_OPTIONS[selectedUploadProvince]?.cities[0]?.name;
     if (firstCity) setSelectedUploadCity(firstCity);
+    setSelectedUploadDistrict("");
   }, [selectedUploadProvince]);
 
-  async function handleShare() {
+  useEffect(() => {
+    setSelectedUploadDistrict("");
+  }, [selectedUploadCity]);
+
+  const handleShare = useCallback(async () => {
     const shareUrl = window.location.href;
 
     try {
@@ -368,20 +498,47 @@ function App() {
     } finally {
       window.setTimeout(() => setShareState("idle"), 2200);
     }
-  }
+  }, []);
 
   async function handlePhotoUpload(event) {
-    const files = Array.from(event.target.files || []);
+    const isDrag = !!event.dataTransfer;
+    const fileList = isDrag ? event.dataTransfer.files : event.target.files;
+    const files = Array.from(fileList || []);
     if (!isUploadUnlocked) {
       setUploadAuthStatus("error");
-      event.target.value = "";
+      if (event.target) event.target.value = "";
       return;
     }
     if (!selectedUploadProvince || !selectedUploadCity || files.length === 0) return;
 
-    const uploadedPhotos = await Promise.all(files.map(fileToPhoto));
+    const customDate = customPhotoDate.trim();
+    const captionPrefix = customPhotoCaption.trim() || null;
+
+    const uploadedPhotos = [];
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
+      try {
+        const caption = captionPrefix
+          ? files.length > 1
+            ? `${captionPrefix}${index + 1}`
+            : captionPrefix
+          : file.name.replace(/\.[^.]+$/, "");
+        const takenAt = customDate || undefined;
+        const photo = await fileToPhoto(file, caption, takenAt);
+        uploadedPhotos.push(photo);
+      } catch (err) {
+        console.error("Failed to read photo:", file.name, err);
+      }
+    }
+
+    if (uploadedPhotos.length === 0) {
+      if (event.target) event.target.value = "";
+      return;
+    }
+
     setUploadedPhotosByCity((currentUploads) => {
-      const currentPayload = currentUploads[selectedUploadCity] || {
+      const key = tripKey(selectedUploadCity, selectedUploadDistrict);
+      const currentPayload = currentUploads[key] || {
         province: selectedUploadProvince,
         photos: [],
       };
@@ -390,15 +547,58 @@ function App() {
         : currentPayload.photos || [];
       const nextUploads = {
         ...currentUploads,
-        [selectedUploadCity]: {
+        [key]: {
           province: selectedUploadProvince,
+          district: selectedUploadDistrict || undefined,
           photos: [...currentPhotos, ...uploadedPhotos],
         },
       };
-      storeUploads(nextUploads);
+
+      // Persist to IndexedDB
+      saveUploadsToIdb(nextUploads).then((result) => {
+        if (result === "quota") {
+          window.alert("存储空间不足，请删除一些旧照片后再试。");
+        }
+      });
+
+      // Auto-select via useEffect (matches by city/district key)
+      setLastUploadKey(key);
+
+      // Un-delete if re-uploading to a previously deleted location
+      const undoIds = [
+        `local-${selectedUploadProvince}-${selectedUploadCity}${selectedUploadDistrict ? `-${selectedUploadDistrict}` : ""}`,
+        ...sortedTravels
+          .filter((t) => tripKey(t.city, t.district) === key)
+          .map((t) => t.id),
+      ];
+      setDeletedTripIds((prev) => {
+        const next = prev.filter((id) => !undoIds.includes(id));
+        if (next.length !== prev.length) storeDeletedTrips(next);
+        return next;
+      });
+
       return nextUploads;
     });
-    event.target.value = "";
+
+    if (event.target) event.target.value = "";
+    setCustomPhotoDate("");
+    setCustomPhotoCaption("");
+  }
+
+  function handleDragOver(event) {
+    event.preventDefault();
+    setIsDragOver(true);
+  }
+
+  function handleDragLeave(event) {
+    event.preventDefault();
+    setIsDragOver(false);
+  }
+
+  function handleDrop(event) {
+    event.preventDefault();
+    setIsDragOver(false);
+    handlePhotoUpload(event);
   }
 
   async function handleUnlockUpload(event) {
@@ -415,13 +615,15 @@ function App() {
     setUploadAuthStatus("ready");
   }
 
-  function handleDeleteUploadedPhoto(city, photo) {
+  function handleDeleteUploadedPhoto(trip, photo) {
     if (!photo.isLocalUpload) return;
     const shouldDelete = window.confirm("删除这张本地上传的照片吗？");
     if (!shouldDelete) return;
 
+    const key = tripKeyFromTrip(trip);
+
     setUploadedPhotosByCity((currentUploads) => {
-      const currentPayload = currentUploads[city];
+      const currentPayload = currentUploads[key];
       if (!currentPayload) return currentUploads;
 
       const currentPhotos = Array.isArray(currentPayload)
@@ -431,16 +633,118 @@ function App() {
       const nextUploads = { ...currentUploads };
 
       if (nextPhotos.length === 0) {
-        delete nextUploads[city];
+        delete nextUploads[key];
       } else {
-        nextUploads[city] = Array.isArray(currentPayload)
+        nextUploads[key] = Array.isArray(currentPayload)
           ? nextPhotos
           : { ...currentPayload, photos: nextPhotos };
       }
 
-      storeUploads(nextUploads);
+      saveUploadsToIdb(nextUploads);
       return nextUploads;
     });
+  }
+
+  function handleStartEditNote() {
+    setEditNoteDraft(selectedTrip?.note || "");
+    setEditingNote(true);
+  }
+
+  function handleSaveNote() {
+    if (!selectedTrip) return;
+    const id = selectedTrip.id;
+    setTripEdits((prev) => {
+      const next = { ...prev, [id]: { ...prev[id], note: editNoteDraft } };
+      // Remove empty edits for this trip
+      const edit = next[id];
+      if (!edit.note && (!edit.tags || edit.tags.length === 0)) {
+        delete next[id];
+      }
+      storeTripEdits(next);
+      return next;
+    });
+    setEditingNote(false);
+  }
+
+  function handleCancelEditNote() {
+    setEditingNote(false);
+    setEditNoteDraft("");
+  }
+
+  function handleStartEditTags() {
+    setEditTagsDraft([...(selectedTrip?.tags || [])]);
+    setEditTagInput("");
+    setEditingTags(true);
+  }
+
+  function handleAddTag() {
+    const tag = editTagInput.trim();
+    if (!tag) return;
+    setEditTagsDraft((prev) => {
+      if (prev.includes(tag)) return prev;
+      return [...prev, tag];
+    });
+    setEditTagInput("");
+  }
+
+  function handleRemoveTag(target) {
+    setEditTagsDraft((prev) => prev.filter((t) => t !== target));
+  }
+
+  function handleSaveTags() {
+    if (!selectedTrip) return;
+    const id = selectedTrip.id;
+    setTripEdits((prev) => {
+      const next = {
+        ...prev,
+        [id]: { ...prev[id], tags: editTagsDraft.length > 0 ? editTagsDraft : undefined },
+      };
+      const edit = next[id];
+      if (!edit.note && (!edit.tags || edit.tags.length === 0)) {
+        delete next[id];
+      }
+      storeTripEdits(next);
+      return next;
+    });
+    setEditingTags(false);
+  }
+
+  function handleCancelEditTags() {
+    setEditingTags(false);
+    setEditTagsDraft([]);
+    setEditTagInput("");
+  }
+
+  function handleDeleteTrip(tripId) {
+    const trip = allTrips.find((t) => t.id === tripId);
+    if (!trip) return;
+    const loc = trip.district ? `${trip.district}, ${trip.city}` : trip.city;
+    const shouldDelete = window.confirm(`确定删除「${loc}」的足迹吗？`);
+    if (!shouldDelete) return;
+
+    // Remove from uploaded storage if it's an uploaded trip
+    const key = tripKeyFromTrip(trip);
+    setUploadedPhotosByCity((currentUploads) => {
+      const nextUploads = { ...currentUploads };
+      if (nextUploads[key]) {
+        delete nextUploads[key];
+      }
+      saveUploadsToIdb(nextUploads);
+      return nextUploads;
+    });
+
+    // Add to deleted list
+    setDeletedTripIds((prev) => {
+      const next = [...prev, tripId];
+      storeDeletedTrips(next);
+      return next;
+    });
+
+    // Select next trip if deleting the current one
+    if (selectedTripId === tripId) {
+      const remaining = allTrips.filter((t) => t.id !== tripId);
+      setSelectedTripId(remaining[0]?.id ?? null);
+    }
   }
 
   useEffect(() => {
@@ -451,115 +755,6 @@ function App() {
     window.addEventListener("keydown", closeLightbox);
     return () => window.removeEventListener("keydown", closeLightbox);
   }, []);
-
-  useEffect(() => {
-    if (!chartRef.current) return undefined;
-
-    const chart = echarts.init(chartRef.current);
-    let disposed = false;
-    const centerMapViewport = () => {
-      const viewport = mapViewportRef.current;
-      if (!viewport) return;
-      viewport.scrollLeft = (viewport.scrollWidth - viewport.clientWidth) / 2;
-      viewport.scrollTop = (viewport.scrollHeight - viewport.clientHeight) / 2;
-    };
-
-    async function loadMap() {
-      try {
-        setMapStatus("loading");
-        const response = await fetch(CHINA_GEOJSON_URL);
-        const geoJson = await response.json();
-        if (disposed) return;
-
-        echarts.registerMap("china-travel", geoJson);
-        chart.setOption({
-          backgroundColor: "transparent",
-          tooltip: {
-            trigger: "item",
-            formatter: (params) => {
-              const trip = allTrips.find((item) => item.id === params.data?.tripId);
-              if (!trip) return params.name;
-              return `${trip.city}<br/>${trip.province}<br/>${formatDateRange(
-                trip.startDate,
-                trip.endDate,
-              )}`;
-            },
-          },
-          geo: {
-            map: "china-travel",
-            roam: true,
-            zoom: 1.05,
-            scaleLimit: {
-              min: 1.05,
-              max: 4,
-            },
-            layoutCenter: ["50%", "50%"],
-            layoutSize: "98%",
-            regions: buildCityRegions(geoJson, allTrips),
-            itemStyle: {
-              areaColor: "#dbd8d1",
-              borderColor: "#c4bfb6",
-              borderWidth: 0.8,
-            },
-            emphasis: {
-              itemStyle: {
-                areaColor: "#cec9c0",
-              },
-              label: {
-                color: "#665b51",
-              },
-            },
-          },
-          series: [
-            {
-              type: "effectScatter",
-              coordinateSystem: "geo",
-              data: buildCitySeries(allTrips),
-              symbolSize: (value) => Math.max(13, Math.min(24, value[2] * 4)),
-              showEffectOn: "render",
-              rippleEffect: {
-                scale: 3.4,
-                brushType: "stroke",
-              },
-              label: {
-                show: true,
-                formatter: (params) => normalizeCityName(params.name),
-                position: "right",
-                color: "#5d4032",
-                fontWeight: 700,
-              },
-            },
-          ],
-        });
-
-        setMapStatus("ready");
-        requestAnimationFrame(centerMapViewport);
-      } catch (error) {
-        if (disposed) return;
-        setMapStatus("error");
-      }
-    }
-
-    loadMap();
-
-    chart.on("click", (params) => {
-      if (params.data?.tripId) {
-        setSelectedTripId(params.data.tripId);
-      }
-    });
-
-    const handleResize = () => {
-      chart.resize();
-      centerMapViewport();
-    };
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      disposed = true;
-      window.removeEventListener("resize", handleResize);
-      chart.dispose();
-    };
-  }, [allTrips]);
 
   return (
     <div className="app-shell">
@@ -587,6 +782,8 @@ function App() {
           </div>
         </div>
 
+        <RandomFrame allTrips={allTrips} />
+
         <div className="stat-grid">
           <article>
             <strong>{stats.cities}</strong>
@@ -597,8 +794,8 @@ function App() {
             <span>覆盖省份</span>
           </article>
           <article>
-            <strong>{stats.totalTrips}</strong>
-            <span>旅行记录</span>
+            <strong>{stats.districts}</strong>
+            <span>精确区县</span>
           </article>
           <article>
             <strong>{stats.totalPhotos}</strong>
@@ -619,12 +816,21 @@ function App() {
                 onClick={() => setSelectedTripId(item.id)}
                 type="button"
               >
-                <span>{item.city}</span>
+                <span>{item.district ? (item.district.length > 6 ? item.district.slice(0, 5) + "\u2026" : item.district) : item.city}</span>
                 <small>{formatDisplayDate(item.startDate)}</small>
               </button>
             ))}
           </div>
         </section>
+
+        <button
+          className="album-entry-btn"
+          type="button"
+          onClick={handleOpenAlbum}
+        >
+          回忆相册
+          <span className="album-entry-hint">看全部照片</span>
+        </button>
       </aside>
 
       <main className="main-panel">
@@ -635,7 +841,7 @@ function App() {
             <div>
               <p className="eyebrow">China Journey</p>
               <h2>点亮去过的城市</h2>
-              <p className="map-subtitle">{buildMapSubtitle()}</p>
+              <p className="map-subtitle">{mapSubtitle}</p>
             </div>
             <div className="hero-actions">
               <div className="legend">
@@ -653,15 +859,14 @@ function App() {
               </button>
             </div>
           </div>
-          <div ref={mapViewportRef} className="map-scroll-frame" aria-label="可拖拽和滚动的中国城市地图">
-            <div ref={chartRef} className="map-canvas" />
+          <div className="map-scroll-frame" aria-label="可拖拽和放大的中国城市地图">
+            <MapView
+              allTrips={allTrips}
+              provinceColors={provinceColors}
+              selectedTripId={selectedTripId}
+              onTripSelect={setSelectedTripId}
+            />
           </div>
-          {mapStatus === "loading" && <p className="map-hint">正在加载地图轮廓...</p>}
-          {mapStatus === "error" && (
-            <p className="map-hint">
-              地图轮廓加载失败，稍后刷新页面或改成本地 GeoJSON 文件。
-            </p>
-          )}
         </section>
 
         {selectedTrip && (
@@ -670,12 +875,47 @@ function App() {
               <div className="section-head">
                 <div>
                   <p className="eyebrow">{selectedTrip.province}</p>
-                  <h2>{selectedTrip.city}</h2>
+                  <h2>{selectedTrip.city}{selectedTrip.district ? ` · ${selectedTrip.district}` : ""}</h2>
                 </div>
                 <span>{formatDateRange(selectedTrip.startDate, selectedTrip.endDate)}</span>
               </div>
 
-              <p className="trip-note">{selectedTrip.note}</p>
+              {editingNote ? (
+                <div className="edit-note-area">
+                  <textarea
+                    className="edit-note-textarea"
+                    value={editNoteDraft}
+                    onChange={(e) => setEditNoteDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") handleCancelEditNote();
+                    }}
+                    rows={4}
+                    placeholder="写一段旅行故事…"
+                    autoFocus
+                  />
+                  <div className="edit-note-actions">
+                    <button className="edit-note-save" type="button" onClick={handleSaveNote}>
+                      保存
+                    </button>
+                    <button className="edit-note-cancel" type="button" onClick={handleCancelEditNote}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p
+                  className="trip-note"
+                  onClick={handleStartEditNote}
+                  title="点击编辑旅行笔记"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleStartEditNote();
+                  }}
+                >
+                  {selectedTrip.note || "点击添加旅行笔记…"}
+                  <span className="edit-hint-icon">&#9998;</span>
+                </p>
+              )}
 
               <div className="meta-row">
                 <span>照片 {selectedTripPhotos.length}</span>
@@ -687,19 +927,80 @@ function App() {
                 </span>
               </div>
 
-              <div className="tag-row">
-                {selectedTrip.tags.map((tag) => (
-                  <span key={tag} className="tag-chip">
-                    {tag}
-                  </span>
-                ))}
-              </div>
+              {editingTags ? (
+                <div className="edit-tags-area">
+                  <div className="edit-tags-list">
+                    {editTagsDraft.map((tag) => (
+                      <span key={tag} className="tag-chip edit-tag-chip">
+                        {tag}
+                        <button
+                          className="tag-remove-btn"
+                          type="button"
+                          onClick={() => handleRemoveTag(tag)}
+                          title="删除标签"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      className="edit-tag-input"
+                      type="text"
+                      value={editTagInput}
+                      onChange={(e) => setEditTagInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); handleAddTag(); }
+                        if (e.key === "Escape") handleCancelEditTags();
+                      }}
+                      placeholder="输入标签后回车"
+                    />
+                  </div>
+                  <div className="edit-note-actions">
+                    <button className="edit-note-save" type="button" onClick={handleSaveTags}>
+                      保存
+                    </button>
+                    <button className="edit-note-cancel" type="button" onClick={handleCancelEditTags}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className="tag-row"
+                  onClick={handleStartEditTags}
+                  title="点击编辑标签"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleStartEditTags();
+                  }}
+                >
+                  {selectedTrip.tags.length > 0 ? (
+                    selectedTrip.tags.map((tag) => (
+                      <span key={tag} className="tag-chip">
+                        {tag}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="tag-chip tag-placeholder">点击添加标签</span>
+                  )}
+                  <span className="edit-hint-icon">&#9998;</span>
+                </div>
+              )}
+
+              <button
+                className="delete-trip-btn"
+                type="button"
+                onClick={() => handleDeleteTrip(selectedTrip.id)}
+                title="删除此足迹"
+              >
+                删除足迹
+              </button>
 
               <BounceCards
                 cards={selectedTripPhotoCards}
                 className="travel-bounce-cards"
                 containerHeight={320}
-                onDelete={(photo) => handleDeleteUploadedPhoto(selectedTrip.city, photo)}
+                onDelete={(photo) => handleDeleteUploadedPhoto(selectedTrip, photo)}
                 onOpen={(photo) => setLightboxPhoto({ ...photo, city: selectedTrip.city })}
               />
             </article>
@@ -742,12 +1043,54 @@ function App() {
                 ))}
               </select>
 
+              {selectedCityDistricts.length > 0 && (
+                <>
+                  <label className="upload-label" htmlFor="district-upload-select">
+                    选择区县（可选）
+                  </label>
+                  <select
+                    id="district-upload-select"
+                    className="upload-select"
+                    value={selectedUploadDistrict}
+                    onChange={(event) => setSelectedUploadDistrict(event.target.value)}
+                  >
+                    <option value="">不指定区县</option>
+                    {selectedCityDistricts.map((d) => (
+                      <option key={d.name} value={d.name}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+
               {isUploadUnlocked ? (
                 <>
                   <div className="upload-auth-success">已解锁，本次会话可继续上传。</div>
-                  <label className="upload-button" htmlFor="photo-upload-input">
-                    上传照片
+
+                  <label className="upload-label" htmlFor="custom-photo-date">
+                    拍摄日期（可选）
                   </label>
+                  <input
+                    id="custom-photo-date"
+                    className="upload-text-input"
+                    type="date"
+                    value={customPhotoDate}
+                    onChange={(e) => setCustomPhotoDate(e.target.value)}
+                  />
+
+                  <label className="upload-label" htmlFor="custom-photo-caption">
+                    照片名称（可选，多张自动编号）
+                  </label>
+                  <input
+                    id="custom-photo-caption"
+                    className="upload-text-input"
+                    type="text"
+                    placeholder="留空则使用文件名"
+                    value={customPhotoCaption}
+                    onChange={(e) => setCustomPhotoCaption(e.target.value)}
+                  />
+
                   <input
                     accept="image/*"
                     className="upload-file-input"
@@ -756,6 +1099,17 @@ function App() {
                     onChange={handlePhotoUpload}
                     type="file"
                   />
+
+                  <label
+                    className={`upload-drop-zone${isDragOver ? " is-dragover" : ""}`}
+                    htmlFor="photo-upload-input"
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
+                    <span className="drop-zone-icon">拖拽照片到此处</span>
+                    <span className="drop-zone-hint">或点击选择文件</span>
+                  </label>
                 </>
               ) : (
                 <form className="upload-auth-form" onSubmit={handleUnlockUpload}>
@@ -786,7 +1140,7 @@ function App() {
               )}
 
               <p className="upload-note">
-                上传后会读取照片拍摄时间，并在当前浏览器里更新对应城市。
+                支持拖拽上传，可自定义拍摄日期与照片名称，广东省支持精确到区县级。
               </p>
             </article>
           </section>
@@ -810,6 +1164,15 @@ function App() {
             </figcaption>
           </figure>
         </div>
+      )}
+      {showAlbum && (
+        <MemoryAlbum
+          allTrips={allTrips}
+          onClose={handleCloseAlbum}
+          onPhotoClick={(photo, trip) =>
+            setLightboxPhoto({ ...photo, city: trip.city })
+          }
+        />
       )}
     </div>
   );

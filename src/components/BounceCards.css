@@ -57,6 +57,27 @@
   font-size: 12px;
 }
 
+.bounce-card-download {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 250, 242, 0.72);
+  border-radius: 999px;
+  background: rgba(47, 43, 40, 0.78);
+  color: #fff7ea;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+  cursor: pointer;
+}
+
+.bounce-card-download:hover {
+  background: #4d8c5e;
+}
+
 .bounce-card-delete {
   position: absolute;
   top: 10px;

@@ -58,6 +58,7 @@ async function main() {
       id: slugify(groupKey),
       city: first.city,
       province: first.province || "待确认",
+      district: first.district || "",
       startDate: first.takenAt?.slice(0, 10) || "",
       endDate: first.takenAt?.slice(0, 10) || "",
       coords: first.coords || [0, 0],

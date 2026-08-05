@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const distanceBetween = (left, right) => {
   const dx = right.x - left.x;
@@ -234,4 +234,4 @@ function TextPressure({
   );
 }
 
-export default TextPressure;
+export default React.memo(TextPressure);

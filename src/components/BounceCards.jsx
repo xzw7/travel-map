@@ -1,6 +1,57 @@
-import { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { gsap } from "gsap";
 import "./BounceCards.css";
+
+function downloadImage(src, filename) {
+  const ext = src.startsWith("data:image/png") || src.startsWith("data:image/x-png")
+    ? "png"
+    : src.startsWith("data:image/gif")
+      ? "gif"
+      : src.startsWith("data:image/webp")
+        ? "webp"
+        : "jpg";
+  const safeName = `${filename}.${ext}`;
+
+  if (src.startsWith("data:")) {
+    const [header, data] = src.split(",");
+    const mime = header.match(/:(.*?);/)?.[1] || "image/jpeg";
+    const byteString = atob(data);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+      ia[i] = byteString.charCodeAt(i);
+    }
+    const blob = new Blob([ab], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = safeName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } else {
+    // Remote URL: try fetch; fallback to open in new tab
+    fetch(src)
+      .then((res) => {
+        if (!res.ok) throw new Error("fetch failed");
+        return res.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = safeName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => {
+        window.open(src, "_blank");
+      });
+  }
+}
 
 function buildTransforms(count) {
   return Array.from({ length: count }, (_, index) => {
@@ -121,6 +172,17 @@ function BounceCards({
             zIndex: index + 1,
           }}
         >
+          <button
+            className="bounce-card-download"
+            onClick={(event) => {
+              event.stopPropagation();
+              downloadImage(card.src, card.caption || "photo");
+            }}
+            title="下载照片"
+            type="button"
+          >
+            下载
+          </button>
           {card.isLocalUpload && (
             <button
               className="bounce-card-delete"

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import { Mesh, Program, Renderer, Triangle } from "ogl";
 import "./GrainientBackground.css";
 
@@ -105,7 +105,7 @@ function hexToRgb(hex) {
   ];
 }
 
-export default function GrainientBackground({
+function GrainientBackground({
   timeSpeed = 0.2,
   colorBalance = 0.0,
   warpStrength = 1.0,
@@ -310,4 +310,6 @@ export default function GrainientBackground({
 
   return <div ref={containerRef} className={`grainient-container ${className}`.trim()} />;
 }
+
+export default React.memo(GrainientBackground);
 
