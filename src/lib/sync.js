@@ -24,37 +24,46 @@ export async function fetchRemotePhotoMetadata() {
 }
 
 /**
- * Fetch photo_data (base64) for specific IDs only — only for missing photos.
+ * Fetch photo_data (base64) for specific IDs — streams results chunk-by-chunk.
  * @param {string[]} ids
- * @param {function} [onProgress] - callback: ({done, total}) => void
- * @returns {Promise<Record<string, string>>} map of id → photo_data
+ * @param {object} [opts]
+ * @param {function} [opts.onProgress] - ({done, total}) => void
+ * @param {function} [opts.onChunk] - (chunkMap: Record<string,string>, {done, total}) => void
+ * @param {number} [opts.chunkSize] - default 10 for smoother streaming
+ * @returns {Promise<Record<string, string>>} full map of id → photo_data
  */
-export async function fetchPhotoDataByIds(ids, onProgress) {
+export async function fetchPhotoDataByIds(ids, opts = {}) {
+  const { onProgress, onChunk, chunkSize = 10 } = opts;
   if (!ids || ids.length === 0) return {};
 
-  const CHUNK = 20;
   const total = ids.length;
   const result = {};
   let done = 0;
 
   onProgress?.({ done: 0, total });
 
-  for (let i = 0; i < total; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK);
+  for (let i = 0; i < total; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
     const { data, error } = await supabase
       .from(TABLE)
       .select("id, photo_data")
       .in("id", chunk);
 
-    if (error) {
+    const chunkMap = {};
+    if (!error) {
+      for (const row of data || []) {
+        result[row.id] = row.photo_data;
+        chunkMap[row.id] = row.photo_data;
+      }
+    } else {
       console.error("fetchPhotoDataByIds failed:", error.message);
-      continue;
     }
-    for (const row of data || []) {
-      result[row.id] = row.photo_data;
-    }
+
     done += chunk.length;
     onProgress?.({ done, total });
+    if (onChunk && Object.keys(chunkMap).length > 0) {
+      onChunk(chunkMap, { done, total });
+    }
   }
   return result;
 }

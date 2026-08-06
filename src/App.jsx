@@ -409,8 +409,8 @@ function App() {
   }, []);
 
   // Pull photos from Supabase cloud on mount
-  // Phase 1: Fetch metadata (fast, ~10KB)
-  // Phase 2: Only download photo_data for photos missing locally, with progress
+  // Phase 1: Fetch metadata (fast, ~10KB) → show cities immediately
+  // Phase 2: Stream photo_data chunk-by-chunk → photos appear progressively
   React.useEffect(() => {
     let cancelled = false;
     setSyncStatus("pulling");
@@ -449,25 +449,28 @@ function App() {
       const missingIds = remoteIds.filter((id) => !localPhotoIds.has(id));
 
       if (missingIds.length > 0 && !cancelled) {
-        // Phase 2: download only missing photos, with progress
-        const photoDataMap = await fetchPhotoDataByIds(missingIds, (p) => {
-          if (!cancelled) setSyncProgress(p);
+        // Stream photos: merge each chunk immediately into state
+        const remoteMetaMap = {};
+        for (const r of remoteMeta) remoteMetaMap[r.id] = r;
+
+        await fetchPhotoDataByIds(missingIds, {
+          chunkSize: 5,
+          onProgress: (p) => { if (!cancelled) setSyncProgress(p); },
+          onChunk: (chunkMap, pg) => {
+            if (cancelled) return;
+            const partialUploads = buildUploadsFromMeta(
+              Object.keys(chunkMap).map((id) => remoteMetaMap[id]).filter(Boolean),
+              chunkMap,
+            );
+            if (Object.keys(partialUploads).length > 0) {
+              setUploadedPhotosByCity((prev) => {
+                const merged = mergeRemoteIntoLocal(prev, partialUploads);
+                saveUploadsToIdb(merged);
+                return merged;
+              });
+            }
+          },
         });
-
-        if (!cancelled && Object.keys(photoDataMap).length > 0) {
-          const remoteUploads = buildUploadsFromMeta(
-            remoteMeta.filter((r) => missingIds.includes(r.id)),
-            photoDataMap,
-          );
-
-          if (Object.keys(remoteUploads).length > 0) {
-            setUploadedPhotosByCity((prev) => {
-              const merged = mergeRemoteIntoLocal(prev, remoteUploads);
-              saveUploadsToIdb(merged);
-              return merged;
-            });
-          }
-        }
       }
 
       if (!cancelled) {
