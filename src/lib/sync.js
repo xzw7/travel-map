@@ -26,16 +26,20 @@ export async function fetchRemotePhotoMetadata() {
 /**
  * Fetch photo_data (base64) for specific IDs only — only for missing photos.
  * @param {string[]} ids
+ * @param {function} [onProgress] - callback: ({done, total}) => void
  * @returns {Promise<Record<string, string>>} map of id → photo_data
  */
-export async function fetchPhotoDataByIds(ids) {
+export async function fetchPhotoDataByIds(ids, onProgress) {
   if (!ids || ids.length === 0) return {};
 
-  // Supabase in() has a practical limit, so chunk
-  const CHUNK = 80;
+  const CHUNK = 20;
+  const total = ids.length;
   const result = {};
+  let done = 0;
 
-  for (let i = 0; i < ids.length; i += CHUNK) {
+  onProgress?.({ done: 0, total });
+
+  for (let i = 0; i < total; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK);
     const { data, error } = await supabase
       .from(TABLE)
@@ -49,6 +53,8 @@ export async function fetchPhotoDataByIds(ids) {
     for (const row of data || []) {
       result[row.id] = row.photo_data;
     }
+    done += chunk.length;
+    onProgress?.({ done, total });
   }
   return result;
 }

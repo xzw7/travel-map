@@ -386,6 +386,7 @@ function App() {
   const [syncStatus, setSyncStatus] = useState("idle"); // idle | pulling | pulled | pushing | pushed | error
   const [cloudPhotoCount, setCloudPhotoCount] = useState(null); // number of photos in Supabase
   const [syncErrorMessage, setSyncErrorMessage] = useState(null);
+  const [syncProgress, setSyncProgress] = useState(null); // {done, total} or null
   const isSyncing = syncStatus === "pulling" || syncStatus === "pushing";
   const [lastUploadKey, setLastUploadKey] = useState(null);
   // Refs for IndexedDB integration (keeps latest state for async handlers)
@@ -409,11 +410,12 @@ function App() {
 
   // Pull photos from Supabase cloud on mount
   // Phase 1: Fetch metadata (fast, ~10KB)
-  // Phase 2: Only download photo_data for photos missing locally
+  // Phase 2: Only download photo_data for photos missing locally, with progress
   React.useEffect(() => {
     let cancelled = false;
     setSyncStatus("pulling");
     setSyncErrorMessage(null);
+    setSyncProgress(null);
 
     (async () => {
       const remoteMeta = await fetchRemotePhotoMetadata();
@@ -447,9 +449,10 @@ function App() {
       const missingIds = remoteIds.filter((id) => !localPhotoIds.has(id));
 
       if (missingIds.length > 0 && !cancelled) {
-        setSyncStatus("pulling");
-        // Phase 2: download only missing photos
-        const photoDataMap = await fetchPhotoDataByIds(missingIds);
+        // Phase 2: download only missing photos, with progress
+        const photoDataMap = await fetchPhotoDataByIds(missingIds, (p) => {
+          if (!cancelled) setSyncProgress(p);
+        });
 
         if (!cancelled && Object.keys(photoDataMap).length > 0) {
           const remoteUploads = buildUploadsFromMeta(
@@ -467,11 +470,15 @@ function App() {
         }
       }
 
-      if (!cancelled) setSyncStatus("pulled");
+      if (!cancelled) {
+        setSyncStatus("pulled");
+        setSyncProgress(null);
+      }
     })().catch((err) => {
       if (!cancelled) {
         setSyncStatus("error");
         setSyncErrorMessage(err?.message || String(err));
+        setSyncProgress(null);
         console.error("Sync fetch threw:", err);
       }
     });
@@ -1126,15 +1133,25 @@ function App() {
             <div className="cloud-sync-status">
               <span className={`sync-dot ${syncStatus === "pulled" || syncStatus === "pushed" ? "synced" : syncStatus === "error" ? "error" : isSyncing ? "syncing" : ""}`} />
               <span className="cloud-sync-label">
-                {isSyncing
-                  ? "云端同步中…"
-                  : syncStatus === "pulled" || syncStatus === "pushed"
-                    ? `云端 ${cloudPhotoCount ?? "?"} 张`
-                    : syncStatus === "error"
-                      ? `连接失败${syncErrorMessage ? ": " + syncErrorMessage : ""}`
-                      : "云端未同步"}
+                {isSyncing && syncProgress
+                  ? `云端同步中 ${Math.min(syncProgress.done, syncProgress.total)}/${syncProgress.total} 张…`
+                  : isSyncing
+                    ? "云端同步中…"
+                    : syncStatus === "pulled" || syncStatus === "pushed"
+                      ? `云端 ${cloudPhotoCount ?? "?"} 张`
+                      : syncStatus === "error"
+                        ? `连接失败${syncErrorMessage ? ": " + syncErrorMessage : ""}`
+                        : "云端未同步"}
               </span>
             </div>
+            {isSyncing && syncProgress && (
+              <div className="sync-progress-bar">
+                <div
+                  className="sync-progress-fill"
+                  style={{ width: `${Math.min(100, Math.round((syncProgress.done / syncProgress.total) * 100))}%` }}
+                />
+              </div>
+            )}
             {syncStatus === "error" && (
               <button
                 className="backup-btn cloud-sync-btn"
