@@ -76,15 +76,26 @@ export async function uploadPhotoToRemote(photoId, base64Src, metadata) {
   let photoUrl = null;
 
   // Check if already uploaded (skip duplicate uploads)
-  const { data: existingRow } = await supabase
-    .from(TABLE)
-    .select("id")
-    .eq("id", photoId)
-    .maybeSingle();
+  try {
+    const { data: existingRow, error: checkError } = await supabase
+      .from(TABLE)
+      .select("id")
+      .eq("id", photoId)
+      .maybeSingle();
 
-  if (existingRow) {
-    // Photo already exists remotely, skip upload
-    return null; // return null to signal "already exists"
+    if (checkError) {
+      console.error("Check existing failed:", checkError.message, checkError.details);
+    }
+
+    if (existingRow) {
+      // Photo already exists remotely, return its URL
+      const { data: urlData } = supabase.storage
+        .from(BUCKET)
+        .getPublicUrl(storagePath);
+      return urlData.publicUrl;
+    }
+  } catch (err) {
+    console.error("Check existing threw:", err);
   }
 
   try {
@@ -99,7 +110,7 @@ export async function uploadPhotoToRemote(photoId, base64Src, metadata) {
       });
 
     if (uploadError) {
-      console.error("Storage upload failed:", uploadError);
+      console.error("Storage upload failed:", uploadError.message, "Status:", uploadError.statusCode, "Details:", JSON.stringify(uploadError));
       return null;
     }
 

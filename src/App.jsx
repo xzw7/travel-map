@@ -975,9 +975,14 @@ function App() {
       setCloudPhotoCount((prev) => (prev ?? 0) + uploadedCount);
       setSyncStatus("pushed");
       if (uploadedCount > 0) {
-        alert(`同步完成！已上传 ${uploadedCount} / ${totalPhotos} 张照片到云端。`);
+        const skipped = totalPhotos - uploadedCount;
+        alert(
+          `同步完成！${uploadedCount} 张已上传云端` +
+          (skipped > 0 ? `，${skipped} 张已在云端` : "") +
+          "。"
+        );
       } else if (totalPhotos > 0) {
-        alert("所有照片已在云端，无需重复上传。");
+        alert(`所有 ${totalPhotos} 张照片已在云端。\n如不确定，请按F12打开控制台查看详细日志。`);
       } else {
         alert("没有需要同步的照片。");
       }
