@@ -9,7 +9,9 @@ import MemoryAlbum from "./components/MemoryAlbum";
 import cityOptions from "./data/cityOptions.json";
 import travels from "./data/travels.json";
 import {
-  fetchRemotePhotos,
+  fetchRemotePhotoMetadata,
+  fetchPhotoDataByIds,
+  buildUploadsFromMeta,
   uploadPhotoToRemote,
   deleteRemotePhoto,
   deleteRemoteTrip,
@@ -406,45 +408,74 @@ function App() {
   }, []);
 
   // Pull photos from Supabase cloud on mount
+  // Phase 1: Fetch metadata (fast, ~10KB)
+  // Phase 2: Only download photo_data for photos missing locally
   React.useEffect(() => {
     let cancelled = false;
     setSyncStatus("pulling");
     setSyncErrorMessage(null);
-    fetchRemotePhotos()
-      .then((remoteData) => {
-        if (cancelled) return;
-        if (remoteData === null) {
-          // fetchRemotePhotos returned null = API error
-          setSyncStatus("error");
-          setSyncErrorMessage("无法连接 Supabase，请检查网络。");
-          return;
-        }
-        if (remoteData && typeof remoteData === "object") {
-          const count = Object.values(remoteData).reduce(
-            (sum, v) => sum + (v.photos?.length || 0), 0,
-          );
-          setCloudPhotoCount(count);
 
-          if (count > 0) {
+    (async () => {
+      const remoteMeta = await fetchRemotePhotoMetadata();
+      if (cancelled) return;
+
+      if (remoteMeta === null) {
+        setSyncStatus("error");
+        setSyncErrorMessage("无法连接 Supabase，请检查网络。");
+        return;
+      }
+
+      const count = remoteMeta.length;
+      setCloudPhotoCount(count);
+
+      if (count === 0) {
+        setSyncStatus("pulled");
+        return;
+      }
+
+      // Check which photo IDs we already have in IndexedDB
+      const localData = await readUploadsFromIdb();
+      const localPhotoIds = new Set();
+      for (const [, v] of Object.entries(localData)) {
+        const photos = Array.isArray(v) ? v : v.photos || [];
+        for (const p of photos) {
+          if (p.id) localPhotoIds.add(p.id);
+        }
+      }
+
+      const remoteIds = remoteMeta.map((r) => r.id);
+      const missingIds = remoteIds.filter((id) => !localPhotoIds.has(id));
+
+      if (missingIds.length > 0 && !cancelled) {
+        setSyncStatus("pulling");
+        // Phase 2: download only missing photos
+        const photoDataMap = await fetchPhotoDataByIds(missingIds);
+
+        if (!cancelled && Object.keys(photoDataMap).length > 0) {
+          const remoteUploads = buildUploadsFromMeta(
+            remoteMeta.filter((r) => missingIds.includes(r.id)),
+            photoDataMap,
+          );
+
+          if (Object.keys(remoteUploads).length > 0) {
             setUploadedPhotosByCity((prev) => {
-              const merged = mergeRemoteIntoLocal(prev, remoteData);
+              const merged = mergeRemoteIntoLocal(prev, remoteUploads);
               saveUploadsToIdb(merged);
               return merged;
             });
           }
-          setSyncStatus("pulled");
-        } else {
-          setSyncStatus("error");
-          setSyncErrorMessage("返回格式异常: " + String(remoteData));
         }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setSyncStatus("error");
-          setSyncErrorMessage(err?.message || String(err));
-          console.error("Sync fetch threw:", err);
-        }
-      });
+      }
+
+      if (!cancelled) setSyncStatus("pulled");
+    })().catch((err) => {
+      if (!cancelled) {
+        setSyncStatus("error");
+        setSyncErrorMessage(err?.message || String(err));
+        console.error("Sync fetch threw:", err);
+      }
+    });
+
     return () => { cancelled = true; };
   }, []);
 

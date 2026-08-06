@@ -3,61 +3,64 @@ import { supabase } from "./supabase";
 const TABLE = "travel_photos";
 
 /**
- * Fetch all photos from Supabase DB, group by city/district key.
- * Returns the same shape as uploadedPhotosByCity in App.jsx.
+ * Fetch only metadata (no photo_data) — fast, ~10KB
+ * @returns {Array|null} array of metadata rows, or null on error
  */
-export async function fetchRemotePhotos() {
+export async function fetchRemotePhotoMetadata() {
   const { data, error } = await supabase
     .from(TABLE)
-    .select("*")
+    .select("id, province, city, district, caption, taken_at")
     .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("fetchRemotePhotos failed:", {
+    console.error("fetchRemotePhotoMetadata failed:", {
       message: error.message,
       details: error.details,
-      hint: error.hint,
       code: error.code,
-      status: error.status,
     });
     return null;
   }
+  return data || [];
+}
 
+/**
+ * Fetch photo_data (base64) for specific IDs only — only for missing photos.
+ * @param {string[]} ids
+ * @returns {Promise<Record<string, string>>} map of id → photo_data
+ */
+export async function fetchPhotoDataByIds(ids) {
+  if (!ids || ids.length === 0) return {};
+
+  // Supabase in() has a practical limit, so chunk
+  const CHUNK = 80;
   const result = {};
-  for (const row of data || []) {
-    const key = row.district
-      ? `${row.city}||${row.district}`
-      : row.city;
-    if (!result[key]) {
-      result[key] = {
-        province: row.province,
-        district: row.district || undefined,
-        photos: [],
-      };
+
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const { data, error } = await supabase
+      .from(TABLE)
+      .select("id, photo_data")
+      .in("id", chunk);
+
+    if (error) {
+      console.error("fetchPhotoDataByIds failed:", error.message);
+      continue;
     }
-    result[key].photos.push({
-      id: row.id,
-      src: row.photo_data,
-      caption: row.caption || "",
-      takenAt: row.taken_at || "",
-      isLocalUpload: true,
-    });
+    for (const row of data || []) {
+      result[row.id] = row.photo_data;
+    }
   }
   return result;
 }
 
 /**
  * Upload a single photo to Supabase DB (stores base64 directly).
- * @param {string} photoId
- * @param {string} base64Src - base64 data URI
- * @param {{ province, city, district, caption, takenAt }} metadata
- * @returns {string|null} - the base64 src on success, null on failure
+ * @returns {string|null} base64 src on success, null on failure
  */
 export async function uploadPhotoToRemote(photoId, base64Src, metadata) {
   const { province, city, district, caption, takenAt } = metadata;
 
   try {
-    // Check if already uploaded
     const { data: existingRow, error: checkError } = await supabase
       .from(TABLE)
       .select("id")
@@ -65,15 +68,13 @@ export async function uploadPhotoToRemote(photoId, base64Src, metadata) {
       .maybeSingle();
 
     if (checkError) {
-      console.error("Check existing failed:", checkError.message, checkError.details);
+      console.error("Check existing failed:", checkError.message);
     }
 
     if (existingRow) {
-      // Already in DB
       return base64Src;
     }
 
-    // Insert directly into DB (no Storage needed)
     const { error: insertError } = await supabase
       .from(TABLE)
       .insert({
@@ -87,14 +88,7 @@ export async function uploadPhotoToRemote(photoId, base64Src, metadata) {
       });
 
     if (insertError) {
-      console.error(
-        "DB insert failed:",
-        insertError.message,
-        "Details:",
-        insertError.details,
-        "Hint:",
-        insertError.hint,
-      );
+      console.error("DB insert failed:", insertError.message, insertError.details);
       return null;
     }
 
@@ -109,13 +103,9 @@ export async function uploadPhotoToRemote(photoId, base64Src, metadata) {
  * Delete a photo from Supabase DB.
  */
 export async function deleteRemotePhoto(photoId) {
-  const { error } = await supabase
-    .from(TABLE)
-    .delete()
-    .eq("id", photoId);
-
+  const { error } = await supabase.from(TABLE).delete().eq("id", photoId);
   if (error) {
-    console.error("Failed to delete remote photo:", error.message, error.details);
+    console.error("Failed to delete remote photo:", error.message);
     return false;
   }
   return true;
@@ -125,23 +115,43 @@ export async function deleteRemotePhoto(photoId) {
  * Delete all photos for a specific city/district from remote.
  */
 export async function deleteRemoteTrip(province, city, district) {
-  let query = supabase
-    .from(TABLE)
-    .delete()
-    .eq("province", province)
-    .eq("city", city);
-
-  if (district) {
-    query = query.eq("district", district);
-  }
+  let query = supabase.from(TABLE).delete().eq("province", province).eq("city", city);
+  if (district) query = query.eq("district", district);
 
   const { error } = await query;
-
   if (error) {
-    console.error("Failed to delete remote trip photos:", error.message, error.details);
+    console.error("Failed to delete remote trip photos:", error.message);
     return false;
   }
   return true;
+}
+
+/**
+ * Build uploadedPhotosByCity structure from metadata rows + photo_data map.
+ */
+export function buildUploadsFromMeta(metaRows, photoDataMap) {
+  const result = {};
+  for (const row of metaRows) {
+    const src = photoDataMap[row.id];
+    if (!src) continue; // skip if we don't have the photo data
+
+    const key = row.district ? `${row.city}||${row.district}` : row.city;
+    if (!result[key]) {
+      result[key] = {
+        province: row.province,
+        district: row.district || undefined,
+        photos: [],
+      };
+    }
+    result[key].photos.push({
+      id: row.id,
+      src,
+      caption: row.caption || "",
+      takenAt: row.taken_at || "",
+      isLocalUpload: true,
+    });
+  }
+  return result;
 }
 
 /**
@@ -163,19 +173,11 @@ export function mergeRemoteIntoLocal(localData, remoteData) {
 
       const finalPhotos = [];
       const seenIds = new Set();
-      // Remote first (higher priority for cross-device sync)
       for (const p of remotePhotos) {
-        if (!seenIds.has(p.id)) {
-          finalPhotos.push(p);
-          seenIds.add(p.id);
-        }
+        if (!seenIds.has(p.id)) { finalPhotos.push(p); seenIds.add(p.id); }
       }
-      // Local photos that aren't in remote
       for (const p of localPhotos) {
-        if (!seenIds.has(p.id)) {
-          finalPhotos.push(p);
-          seenIds.add(p.id);
-        }
+        if (!seenIds.has(p.id)) { finalPhotos.push(p); seenIds.add(p.id); }
       }
 
       merged[key] = {
