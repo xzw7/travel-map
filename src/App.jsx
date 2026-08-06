@@ -383,6 +383,7 @@ function App() {
   const importFileRef = React.useRef(null);
   const [syncStatus, setSyncStatus] = useState("idle"); // idle | pulling | pulled | pushing | pushed | error
   const [cloudPhotoCount, setCloudPhotoCount] = useState(null); // number of photos in Supabase
+  const [syncErrorMessage, setSyncErrorMessage] = useState(null);
   const isSyncing = syncStatus === "pulling" || syncStatus === "pushing";
   const [lastUploadKey, setLastUploadKey] = useState(null);
   // Refs for IndexedDB integration (keeps latest state for async handlers)
@@ -408,10 +409,17 @@ function App() {
   React.useEffect(() => {
     let cancelled = false;
     setSyncStatus("pulling");
+    setSyncErrorMessage(null);
     fetchRemotePhotos()
       .then((remoteData) => {
         if (cancelled) return;
-        if (remoteData) {
+        if (remoteData === null) {
+          // fetchRemotePhotos returned null = API error
+          setSyncStatus("error");
+          setSyncErrorMessage("无法连接 Supabase，请检查网络。");
+          return;
+        }
+        if (remoteData && typeof remoteData === "object") {
           const count = Object.values(remoteData).reduce(
             (sum, v) => sum + (v.photos?.length || 0), 0,
           );
@@ -427,10 +435,15 @@ function App() {
           setSyncStatus("pulled");
         } else {
           setSyncStatus("error");
+          setSyncErrorMessage("返回格式异常: " + String(remoteData));
         }
       })
-      .catch(() => {
-        if (!cancelled) setSyncStatus("error");
+      .catch((err) => {
+        if (!cancelled) {
+          setSyncStatus("error");
+          setSyncErrorMessage(err?.message || String(err));
+          console.error("Sync fetch threw:", err);
+        }
       });
     return () => { cancelled = true; };
   }, []);
@@ -1087,10 +1100,20 @@ function App() {
                   : syncStatus === "pulled" || syncStatus === "pushed"
                     ? `云端 ${cloudPhotoCount ?? "?"} 张`
                     : syncStatus === "error"
-                      ? "云端连接失败"
+                      ? `连接失败${syncErrorMessage ? ": " + syncErrorMessage : ""}`
                       : "云端未同步"}
               </span>
             </div>
+            {syncStatus === "error" && (
+              <button
+                className="backup-btn cloud-sync-btn"
+                type="button"
+                onClick={() => window.location.reload()}
+                style={{ fontSize: 12, minHeight: 30 }}
+              >
+                重新连接
+              </button>
+            )}
             <button
               className="backup-btn cloud-sync-btn"
               type="button"

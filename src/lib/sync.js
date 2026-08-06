@@ -13,7 +13,13 @@ export async function fetchRemotePhotos() {
     .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("Failed to fetch remote photos:", error.message, error.details);
+    console.error("fetchRemotePhotos failed:", {
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      code: error.code,
+      status: error.status,
+    });
     return null;
   }
 
