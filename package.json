@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "import-photos": "node scripts/import-photos.mjs",
     "merge-review": "node scripts/merge-review.mjs",
-    "predeploy": "vite build",
+    "predeploy": "vite build && node -e \"require('fs').writeFileSync('dist/.nojekyll','')\"",
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
