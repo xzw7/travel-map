@@ -1074,10 +1074,80 @@ img {
   font-weight: 400;
 }
 
+/* ---- 云端同步 ---- */
+
+.cloud-sync-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(245, 249, 242, 0.5) 0%, rgba(235, 245, 233, 0.4) 100%);
+  border: 1px solid rgba(138, 177, 125, 0.18);
+}
+
+.cloud-sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ccc;
+  flex-shrink: 0;
+}
+
+.sync-dot.synced {
+  background: #6aaa5a;
+}
+
+.sync-dot.syncing {
+  background: #d4943a;
+  animation: sync-pulse 1.2s ease-in-out infinite;
+}
+
+.sync-dot.error {
+  background: #d4644a;
+}
+
+@keyframes sync-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.cloud-sync-label {
+  font-size: 12px;
+  color: #6b7a5e;
+  font-weight: 500;
+}
+
+.cloud-sync-btn {
+  background: linear-gradient(180deg, rgba(138, 177, 125, 0.18) 0%, rgba(110, 155, 98, 0.12) 100%);
+  color: #4a6b3f;
+  border-color: rgba(138, 177, 125, 0.3);
+}
+
+.cloud-sync-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(138, 177, 125, 0.28) 0%, rgba(110, 155, 98, 0.2) 100%);
+  border-color: rgba(138, 177, 125, 0.5);
+  box-shadow: 0 6px 16px rgba(138, 177, 125, 0.1);
+  transform: translateY(-1px);
+}
+
+.cloud-sync-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---- 导入/导出备份 ---- */
 
 .backup-section {
   display: flex;
+  flex-direction: column;
   gap: 10px;
   margin-top: 10px;
 }

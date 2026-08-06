@@ -13,6 +13,7 @@ export default defineConfig({
           gsap: ["gsap"],
           ogl: ["ogl"],
           exifr: ["exifr"],
+          supabase: ["@supabase/supabase-js"],
         },
       },
     },

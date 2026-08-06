@@ -8,6 +8,13 @@ import RandomFrame from "./components/RandomFrame";
 import MemoryAlbum from "./components/MemoryAlbum";
 import cityOptions from "./data/cityOptions.json";
 import travels from "./data/travels.json";
+import {
+  fetchRemotePhotos,
+  uploadPhotoToRemote,
+  deleteRemotePhoto,
+  deleteRemoteTrip,
+  mergeRemoteIntoLocal,
+} from "./lib/sync";
 
 const UPLOAD_STORAGE_KEY = "travel-map-local-uploads";
 const UPLOAD_AUTH_KEY = "travel-map-upload-unlocked";
@@ -374,6 +381,9 @@ function App() {
   const [uploadedPhotosByCity, setUploadedPhotosByCity] = useState(readStoredUploads);
   const [backupStatus, setBackupStatus] = useState("idle"); // idle | exporting | done | error
   const importFileRef = React.useRef(null);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | pulling | pulled | pushing | pushed | error
+  const [cloudPhotoCount, setCloudPhotoCount] = useState(null); // number of photos in Supabase
+  const isSyncing = syncStatus === "pulling" || syncStatus === "pushing";
   const [lastUploadKey, setLastUploadKey] = useState(null);
   // Refs for IndexedDB integration (keeps latest state for async handlers)
   const uploadedRef = React.useRef(uploadedPhotosByCity);
@@ -391,6 +401,37 @@ function App() {
         });
       }
     });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Pull photos from Supabase cloud on mount
+  React.useEffect(() => {
+    let cancelled = false;
+    setSyncStatus("pulling");
+    fetchRemotePhotos()
+      .then((remoteData) => {
+        if (cancelled) return;
+        if (remoteData) {
+          const count = Object.values(remoteData).reduce(
+            (sum, v) => sum + (v.photos?.length || 0), 0,
+          );
+          setCloudPhotoCount(count);
+
+          if (count > 0) {
+            setUploadedPhotosByCity((prev) => {
+              const merged = mergeRemoteIntoLocal(prev, remoteData);
+              saveUploadsToIdb(merged);
+              return merged;
+            });
+          }
+          setSyncStatus("pulled");
+        } else {
+          setSyncStatus("error");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSyncStatus("error");
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -582,6 +623,24 @@ function App() {
       return nextUploads;
     });
 
+    // Upload to Supabase cloud in background
+    const remoteMetadata = {
+      province: selectedUploadProvince,
+      city: selectedUploadCity,
+      district: selectedUploadDistrict,
+    };
+    uploadedPhotos.forEach((photo) => {
+      uploadPhotoToRemote(photo.id, photo.src, {
+        ...remoteMetadata,
+        caption: photo.caption,
+        takenAt: photo.takenAt,
+      }).then((url) => {
+        if (url) {
+          setCloudPhotoCount((prev) => (prev ?? 0) + 1);
+        }
+      });
+    });
+
     if (event.target) event.target.value = "";
     setCustomPhotoDate("");
     setCustomPhotoCaption("");
@@ -623,6 +682,11 @@ function App() {
     if (!shouldDelete) return;
 
     const key = tripKeyFromTrip(trip);
+
+    // Delete from remote
+    deleteRemotePhoto(photo.id).then((ok) => {
+      if (ok) setCloudPhotoCount((prev) => (prev != null ? Math.max(0, prev - 1) : null));
+    });
 
     setUploadedPhotosByCity((currentUploads) => {
       const currentPayload = currentUploads[key];
@@ -843,6 +907,16 @@ function App() {
     const shouldDelete = window.confirm(`确定删除「${loc}」的足迹吗？`);
     if (!shouldDelete) return;
 
+    // Delete all photos from remote
+    deleteRemoteTrip(trip.province, trip.city, trip.district).then((ok) => {
+      if (ok) {
+        const deletedCount = trip.photos.filter((p) => p.isLocalUpload).length;
+        setCloudPhotoCount((prev) =>
+          prev != null ? Math.max(0, prev - deletedCount) : null,
+        );
+      }
+    });
+
     // Remove from uploaded storage if it's an uploaded trip
     const key = tripKeyFromTrip(trip);
     setUploadedPhotosByCity((currentUploads) => {
@@ -865,6 +939,51 @@ function App() {
     if (selectedTripId === tripId) {
       const remaining = allTrips.filter((t) => t.id !== tripId);
       setSelectedTripId(remaining[0]?.id ?? null);
+    }
+  }
+
+  async function handleSyncAllToCloud() {
+    setSyncStatus("pushing");
+    try {
+      const allUploads = await readUploadsFromIdb();
+      let uploadedCount = 0;
+      const totalPhotos = Object.values(allUploads).reduce(
+        (sum, v) => sum + (Array.isArray(v) ? v.length : v.photos?.length || 0), 0,
+      );
+
+      for (const [, payload] of Object.entries(allUploads)) {
+        const photos = Array.isArray(payload) ? payload : payload.photos || [];
+        const province = Array.isArray(payload) ? "" : payload.province || "";
+        const district = Array.isArray(payload) ? "" : payload.district || "";
+        const key = Object.keys(allUploads).find(
+          (k) => allUploads[k] === payload,
+        );
+        const city = key ? (key.includes("||") ? key.split("||")[0] : key) : "";
+
+        for (const photo of photos) {
+          const result = await uploadPhotoToRemote(photo.id, photo.src, {
+            province,
+            city,
+            district,
+            caption: photo.caption,
+            takenAt: photo.takenAt,
+          });
+          if (result) uploadedCount++;
+        }
+      }
+
+      setCloudPhotoCount((prev) => (prev ?? 0) + uploadedCount);
+      setSyncStatus("pushed");
+      if (uploadedCount > 0) {
+        alert(`同步完成！已上传 ${uploadedCount} / ${totalPhotos} 张照片到云端。`);
+      } else if (totalPhotos > 0) {
+        alert("所有照片已在云端，无需重复上传。");
+      } else {
+        alert("没有需要同步的照片。");
+      }
+    } catch (err) {
+      console.error("Sync all failed:", err);
+      setSyncStatus("error");
     }
   }
 
@@ -954,6 +1073,28 @@ function App() {
         </button>
 
         <div className="backup-section">
+          <div className="cloud-sync-section">
+            <div className="cloud-sync-status">
+              <span className={`sync-dot ${syncStatus === "pulled" || syncStatus === "pushed" ? "synced" : syncStatus === "error" ? "error" : isSyncing ? "syncing" : ""}`} />
+              <span className="cloud-sync-label">
+                {isSyncing
+                  ? "云端同步中…"
+                  : syncStatus === "pulled" || syncStatus === "pushed"
+                    ? `云端 ${cloudPhotoCount ?? "?"} 张`
+                    : syncStatus === "error"
+                      ? "云端连接失败"
+                      : "云端未同步"}
+              </span>
+            </div>
+            <button
+              className="backup-btn cloud-sync-btn"
+              type="button"
+              onClick={handleSyncAllToCloud}
+              disabled={isSyncing}
+            >
+              {syncStatus === "pushing" ? "上传中…" : syncStatus === "pushed" ? "同步完成" : "同步到云端"}
+            </button>
+          </div>
           <button
             className="backup-btn export-btn"
             type="button"
