@@ -1072,7 +1072,7 @@ function App() {
               maxFontSize={42}
               minFontSize={24}
               strokeColor="#fff0df"
-              text="粉色"
+              text="旅行"
               textColor="#a84435"
               textTransform="none"
               weight
