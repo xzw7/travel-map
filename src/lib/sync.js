@@ -3,13 +3,15 @@ import { supabase } from "./supabase";
 const TABLE = "travel_photos";
 
 /**
- * Fetch only metadata (no photo_data) — fast, ~10KB
+ * Fetch only metadata (no photo_data) — fast, ~10KB.
+ * Includes auto-retry for Supabase free-tier cold start.
+ * @param {number} [attempt] - internal retry counter
  * @returns {Array|null} array of metadata rows, or null on error
  */
-export async function fetchRemotePhotoMetadata() {
+export async function fetchRemotePhotoMetadata(attempt = 0) {
   const { data, error } = await supabase
     .from(TABLE)
-    .select("id, province, city, district, caption, taken_at")
+    .select("id, province, city, district, caption, taken_at, created_at")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -18,6 +20,20 @@ export async function fetchRemotePhotoMetadata() {
       details: error.details,
       code: error.code,
     });
+
+    // Auto-retry on timeout (free tier cold start can take 5-10s)
+    if (attempt < 2 && (
+      error.message?.includes("timeout") ||
+      error.message?.includes("cancel") ||
+      error.message?.includes("Failed to fetch") ||
+      error.code === "57014"
+    )) {
+      const delay = (attempt + 1) * 2000;
+      console.log(`Retrying fetchRemotePhotoMetadata in ${delay}ms (attempt ${attempt + 1})...`);
+      await new Promise((r) => setTimeout(r, delay));
+      return fetchRemotePhotoMetadata(attempt + 1);
+    }
+
     return null;
   }
   return data || [];
@@ -44,10 +60,28 @@ export async function fetchPhotoDataByIds(ids, opts = {}) {
 
   for (let i = 0; i < total; i += chunkSize) {
     const chunk = ids.slice(i, i + chunkSize);
-    const { data, error } = await supabase
-      .from(TABLE)
-      .select("id, photo_data")
-      .in("id", chunk);
+    let data, error;
+    
+    // Retry each chunk up to 2 times on timeout
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await supabase
+        .from(TABLE)
+        .select("id, photo_data")
+        .in("id", chunk);
+      data = res.data;
+      error = res.error;
+      if (!error) break;
+      if (attempt < 2 && (
+        error.message?.includes("timeout") ||
+        error.message?.includes("cancel") ||
+        error.message?.includes("Failed to fetch") ||
+        error.code === "57014"
+      )) {
+        await new Promise((r) => setTimeout(r, (attempt + 1) * 2000));
+        continue;
+      }
+      break;
+    }
 
     const chunkMap = {};
     if (!error) {
