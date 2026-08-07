@@ -867,6 +867,8 @@ img {
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 1fr;
+    max-width: 100vw;
+    overflow-x: hidden;
   }
 
   .detail-grid {
@@ -874,31 +876,220 @@ img {
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .app-shell {
-    padding: 14px;
-    gap: 14px;
+    padding: 10px;
+    gap: 12px;
   }
 
   .sidebar,
   .hero-map,
   .trip-card,
   .upload-card {
-    border-radius: 22px;
-    padding: 18px;
+    border-radius: 20px;
+    padding: 14px;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  .sidebar {
+    gap: 14px;
+  }
+
+  .main-panel {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  /* Prevent any content from overflowing */
+  .sidebar *,
+  .main-panel *,
+  .detail-grid * {
+    max-width: 100%;
+    word-wrap: break-word;
   }
 
   .sweetheart-pressure {
-    height: 58px;
+    height: 52px;
   }
 
   .map-scroll-frame {
-    min-height: 340px;
-    aspect-ratio: 1 / 1;
+    min-height: 280px;
+    aspect-ratio: 4 / 3;
+    max-height: 50vh;
   }
 
+  .hero-map {
+    max-width: 100%;
+  }
+
+  .hero-map > .map-scroll-frame {
+    max-width: 100%;
+  }
+
+  /* Detail grid: stack vertically */
+  .detail-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    max-width: 100%;
+  }
+
+  /* Lightbox */
+  .lightbox-frame {
+    width: 95vw;
+    padding: 16px 10px 10px;
+  }
   .lightbox-frame figcaption {
     display: grid;
+  }
+  .lightbox-close {
+    top: -10px;
+    right: -8px;
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  /* Buttons: larger touch targets */
+  .backup-btn {
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  .album-entry-btn {
+    min-height: 48px;
+    font-size: 14px;
+    margin-top: 6px;
+  }
+
+  .share-button {
+    min-height: 40px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  /* Timeline */
+  .timeline-list {
+    max-height: none;
+  }
+
+  .timeline-item {
+    padding: 10px 12px;
+  }
+
+  /* Stats grid: 2 columns */
+  .stat-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* Upload form */
+  .upload-auth-row {
+    grid-template-columns: 1fr;
+  }
+
+  .upload-drop-zone {
+    min-height: 100px;
+  }
+
+  /* Avatar / bounce cards: ensure they fit */
+  .travel-bounce-cards {
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  /* Meta row */
+  .meta-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .tag-row {
+    flex-wrap: wrap;
+  }
+
+  /* Memory album on mobile */
+  .memory-album-overlay {
+    padding: 8px;
+  }
+  .memory-album {
+    max-height: 96vh;
+    border-radius: 16px;
+  }
+  .memory-album-header {
+    padding: 16px 14px 12px;
+  }
+  .memory-album-header h2 {
+    font-size: 18px;
+  }
+  .memory-album-list {
+    padding: 12px 14px 20px;
+  }
+  .memory-photo-grid {
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 8px;
+  }
+  .memory-city-head {
+    flex-wrap: wrap;
+  }
+
+  /* Sync section */
+  .cloud-sync-section {
+    padding: 12px;
+  }
+
+  /* Hero actions */
+  .hero-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 400px) {
+  .app-shell {
+    padding: 6px;
+    gap: 8px;
+  }
+
+  .sidebar,
+  .hero-map,
+  .trip-card,
+  .upload-card {
+    border-radius: 16px;
+    padding: 12px;
+  }
+
+  .sidebar h1 {
+    font-size: 1.5em;
+  }
+
+  .section-head h2 {
+    font-size: 1.1em;
+  }
+
+  .stat-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .timeline-item {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .map-scroll-frame {
+    min-height: 220px;
+    max-height: 40vh;
+  }
+
+  .backup-btn {
+    min-height: 44px;
+    font-size: 13px;
+    padding: 0 10px;
+  }
+
+  .memory-photo-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1429,28 +1620,4 @@ img {
   font-size: 11px;
 }
 
-/* ---- 响应式：回忆相册 ---- */
 
-@media (max-width: 700px) {
-  .memory-album {
-    max-height: 94vh;
-    border-radius: 20px;
-  }
-
-  .memory-album-header {
-    padding: 20px 18px 14px;
-  }
-
-  .memory-album-header h2 {
-    font-size: 20px;
-  }
-
-  .memory-album-list {
-    padding: 16px 18px 24px;
-  }
-
-  .memory-photo-grid {
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 10px;
-  }
-}
